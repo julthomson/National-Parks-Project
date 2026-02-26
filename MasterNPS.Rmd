@@ -1,0 +1,687 @@
+---
+title: "Master File: How Proximity to National Parks Shapes Partisanship: Evidence from U.S. Counties, 2000-2024"
+author: "Julianna Thomson and Stephen Gailliot"
+date: "2026-02-16"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+**Notes:**
+
+-   Chunk 1: Set up and import data.
+
+-   Chunk 2: Clean and prepare data.
+
+-   Chunk 3: Creates panel data.
+
+-   Chunk 4: Adds Controls to panel data.
+
+-   Chunk 5: Regression models for 50-mile radius around national parks.
+
+-   Chunk 6: Line charts and stacked bar charts comparing counties and states.
+
+-   Chunk 7: Regression based on proximity.
+
+-   Chunk 8: State map for 2024 election only.
+
+-   Chunk 9: State maps for all election years.
+
+*Replication Rmd file contains the code to run abbreviated Chunks 5-9 using exported csv data.*
+
+**Key Variables:**
+
+*df_panel_sub_50* contains the panel data for the regressions.
+
+-   DV is voteshare, which is the Democrat vote share by county.
+
+-   IV1 is CnPdistance_log.
+    This is the logged distance between the county and national park centroids.
+
+-   IV2 is proximity.
+    This is the logged sum of distances between the county and each national park within 50 miles by centroid.
+
+-   Controls: WHITE for ethnicity, INCOME10K, POPULATION100K, BA for education (Bachelors or higher) and M1_distance_miles/M1_distance_log for distance to the nearest metropolitan area.
+
+*model_50_summary* contains the results of the regression analysis based on df_panel_sub_50.
+It accounts for counties that are up to 50 miles from a national park.
+
+**Chunk 1:**
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#start new R session and clear output. 
+rm(list = ls())
+cat("\f")
+set.seed(42)
+
+#----SETTING UP----
+
+Packages<-c("tidyr", "tidyverse", "dplyr","knitr", "readr", "sf", "units", "spdep", "ggplot2", "modelsummary", "stargazer", "gt", "magrittr")
+lapply(Packages, library, character.only = TRUE)
+
+#DATA IMPORT
+
+setwd("C:/Users/julia/OneDrive - George Mason University - O365 Production/Stephen G Gailliot's files - NPS")
+
+#Read county-level voting data from MIT Election Data + Science Lab
+#https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/VOQCHQ
+df_votes <- read_csv("C:/Users/julia/OneDrive - George Mason University - O365 Production/Stephen G Gailliot's files - NPS/countypres_2000-2024.csv")
+
+#Read in geospatial data from the National Park Service (NPS).
+#https://irma.nps.gov/DataStore/Reference/Profile/2224545?lnv=True
+df_NPS <- st_read("C:/Users/julia/OneDrive - George Mason University - O365 Production/Stephen G Gailliot's files - NPS/nps_boundary.shp")
+
+#Read in geospatial county data from the U.S. Census.
+#https://www.census.gov/cgi-bin/geo/shapefiles/index.php
+#Note: U.S. Census does not have a county file for 2004.
+df_counties24 <- st_read("C:/Users/julia/OneDrive - George Mason University - O365 Production/Stephen G Gailliot's files - NPS/tl_2024_us_county.shp")
+
+#Read in population estimates from U.S. Department of Agriculture Economic Research Service
+#https://www.ers.usda.gov/data-products/county-level-data-sets/county-level-data-sets-download-data
+df_pop <- read_csv("C:/Users/julia/OneDrive - George Mason University - O365 Production/Stephen G Gailliot's files - NPS/PopulationEstimates.csv")
+
+#Read in median income from U.S. Department of Agriculture Economic Research Service
+#https://www.ers.usda.gov/data-products/county-level-data-sets/county-level-data-sets-download-data
+df_income <- read.csv("C:/Users/julia/OneDrive - George Mason University - O365 Production/Stephen G Gailliot's files - NPS/Unemployment2023.csv")
+
+#Read in race/ethnicity data from U.S. Census Bureau
+#https://data.census.gov/table/ACSDT5Y2023.B02001?t=Race+and+Ethnicity&g=010XX00US$0500000
+df_race <- read.csv("C:/Users/julia/OneDrive - George Mason University - O365 Production/Stephen G Gailliot's files - NPS/ACSDT5Y2023.B02001-Data.csv")
+
+#Read in education data from U.S. Census Bureau
+#https://data.census.gov/table/ACSST5Y2023.S1501?t=Education&g=010XX00US$0500000
+df_edu <- read.csv("C:/Users/julia/OneDrive - George Mason University - O365 Production/Stephen G Gailliot's files - NPS/ACSST5Y2023.S1501-Data.csv")
+
+#Read in metropolitan/micropolitan data from U.S. Census
+#https://catalog-beta.data.gov/dataset/tiger-line-shapefile-2018-nation-u-s-current-metropolitan-statistical-area-micropolitan-st
+sf_CBSA <- st_read("C:/Users/julia/OneDrive - George Mason University - O365 Production/Stephen G Gailliot's files - NPS/tl_2018_us_cbsa.shp")
+```
+
+**Chunk 2:**
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#----CLEAN DATA----
+
+#Calculate vote share for each candidate by county
+
+df_votes$vote_share <- df_votes$candidatevotes / df_votes$totalvotes * 100
+
+#Prepare voting data for merging with county data
+
+#Duplicate the FIPS column and add a zero to each. Necessary to merge with the Census data below.
+df_votes$county_fips2 <- as.character(df_votes$county_fips)
+df_votes$county_fips2 <- sprintf("%05s", df_votes$county_fips2)
+df_votes$GEOID <- df_votes$county_fips2
+
+#Subset relevant NPS data
+
+#Subset NPS data; National Park
+df_parks <- subset(df_NPS, UNIT_TYPE=="National Park")
+
+#5-digit GEOIDs for race/ethnicity data
+
+df_race <- df_race[-1, ] #Remove header
+df_race$GEOID <- stringr::str_sub(df_race$GEO_ID, -5)
+
+#5-digit GEOIDs for education data
+
+df_edu <- df_edu[-1, ] #Remove header
+df_edu$GEO_ID <- stringr::str_sub(df_edu$GEO_ID, -5)
+
+# ----CALCULATE COUNTY CENTROIDS----
+#County Data
+
+county_centroids <- st_centroid(df_counties24)
+county_centroids <- cbind(
+  county_centroids,
+  st_coordinates(county_centroids))
+
+#NPS Data
+
+sf_use_s2(FALSE)  #Issue with overlap between two of the parks. This and the code that follows enabled centroid calculations.
+parks_valid <- df_parks %>%
+  st_make_valid()
+parks_centroids <- parks_valid %>%
+  st_centroid()
+
+# ----MERGE CENTROID AND VOTING DATA----
+
+df_votes_w_coords <- merge(df_votes, county_centroids, by.x="county_fips2", by.y="GEOID")
+
+#----SET SPATIAL DATA TO EPSG 2163----
+#EPSG 2163 is the US National Atlas Equal Area. 
+parks_proj <- st_transform(parks_centroids, 2163) 
+parks_proj$park_code <- make.unique(rep(LETTERS, length.out = nrow(parks_proj)))
+parks_proj$park_code <- gsub("\\.", "", parks_proj$park_code)
+
+counties_proj <- st_transform(county_centroids, 2163) 
+counties_proj$county_code <- make.unique(rep(LETTERS, length.out = nrow(counties_proj)))
+counties_proj$county_code <- gsub("\\.", "", counties_proj$county_code)
+
+#----CALCULATE DISTANCE BETWEEN COUNTY AND PARK CENTROIDS----
+
+#Create an index based on the parks and counties.
+dist_mat <- st_distance(parks_proj, counties_proj)
+
+#Conver the matrix to a dataframe.
+df_dist_CnP <- as.data.frame(as.table(dist_mat))
+colnames(df_dist_CnP) <- c("park_code", "county_code", "distance_m")
+df_dist_CnP <- as.data.frame(as.table(dist_mat))
+
+rownames(dist_mat) <- parks_proj$park_code
+colnames(dist_mat) <- counties_proj$county_code 
+
+df_dist_CnP <- as.data.frame(as.table(dist_mat)) %>%
+  rename(park_code = Var1, county_code = Var2, distance_m = Freq)
+
+#Join the dataframe with distances between parks and counties by centroid with the full park and county dataframes. This brings back in the spatial data and identifiers (i.e., GEOID)
+df_dist_CnP <- df_dist_CnP %>%
+  left_join(parks_proj %>% st_set_geometry(NULL), by = "park_code") %>%
+  left_join(counties_proj %>% st_set_geometry(NULL), by = "county_code")
+
+#Add a column for miles, as the default is meters.
+df_dist_CnP <- df_dist_CnP %>%
+  mutate(distance_miles = set_units(distance_m, "miles") %>% drop_units())
+
+#----CALCULATE DISTANCES, COUNTIES AND METROPOLITAN AREAS------
+
+#df_dist_CnP_50 <- subset(df_dist_CnP, distance_miles <=50)
+
+cbsa_m1_proj <- sf_CBSA %>%
+  filter(LSAD == "M1")
+cbsa_m1_proj <- st_centroid(cbsa_m1_proj)
+cbsa_m1_proj <- st_transform(cbsa_m1_proj, 2163)
+cbsa_m1_proj$M1_code <- make.unique(rep(LETTERS, length.out = nrow(cbsa_m1_proj)))
+cbsa_m1_proj$M1_code <- gsub("\\.", "", cbsa_m1_proj$M1_code)
+
+#Create an index based on the M1s and counties.
+dist_mat2 <- st_distance(cbsa_m1_proj, counties_proj)
+
+#Conver the matrix to a dataframe.
+df_dist_CnM1 <- as.data.frame(as.table(dist_mat2))
+colnames(df_dist_CnM1) <- c("M1_code", "county_code", "distance_m")
+df_dist_CnM1 <- as.data.frame(as.table(dist_mat2))
+
+rownames(dist_mat2) <- cbsa_m1_proj$M1_code
+colnames(dist_mat2) <- counties_proj$county_code 
+
+df_dist_CnM1 <- as.data.frame(as.table(dist_mat2)) %>%
+  rename(M1_code = Var1, county_code = Var2, distance_m = Freq)
+
+#Join the dataframe with distances between M1s and counties by centroid. This brings back in the spatial data and identifiers (i.e., GEOID)
+df_dist_CnM1 <- df_dist_CnM1 %>%
+  left_join(cbsa_m1_proj %>% st_set_geometry(NULL), by = "M1_code") %>%
+  left_join(counties_proj %>% st_set_geometry(NULL), by = "county_code")
+
+#Add a column for miles, as the default is meters.
+df_dist_CnM1 <- df_dist_CnM1 %>%
+  mutate(distance_miles = set_units(distance_m, "miles") %>% drop_units())
+```
+
+**Chunk 3:**
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#----CREATE PANEL DATA----
+
+df_dem <- subset(df_votes, party=="DEMOCRAT")
+
+df_dem_votes <- df_dem %>%
+  group_by(GEOID, year) %>%
+  summarise(
+    candidatevotes = sum(candidatevotes, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+df_dem_total <- df_dem %>%
+  group_by(GEOID, year) %>%
+  summarise(
+    totalvotes = sum(totalvotes, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+df_dem_voteshare <- df_dem_votes
+df_dem_voteshare$totalvotes <- df_dem_total$totalvotes
+df_dem_voteshare$voteshare <- df_dem_voteshare$candidatevotes / df_dem_voteshare$totalvotes * 100
+
+df_dem_voteshare_dist <- df_dem_voteshare %>%
+  left_join(df_dist_CnP, by = "GEOID")
+
+df_dem_voteshare_dist$distanceCnP_log <- log(df_dem_voteshare_dist$distance_miles)
+
+#Save panel data as csv for replication file (need it to create state maps for multiple election years.)
+write_csv(df_dem_voteshare, "C:/Users/julia/OneDrive - George Mason University - O365 Production/Stephen G Gailliot's files - NPS/df_dem_voteshare.csv")
+```
+
+**Chunk 4:**
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#----CONTROLS----
+#------Population------
+df_pop_23 <- subset(df_pop, Attribute=="POP_ESTIMATE_2023")
+us_states_territories <- c(
+  "United States", "Alabama","Alaska","Arizona","Arkansas","California","Colorado",
+  "Connecticut","Delaware","Florida","Georgia","Hawaii","Idaho",
+  "Illinois","Indiana","Iowa","Kansas","Kentucky","Louisiana",
+  "Maine","Maryland","Massachusetts","Michigan","Minnesota",
+  "Mississippi","Missouri","Montana","Nebraska","Nevada",
+  "New Hampshire","New Jersey","New Mexico","New York",
+  "North Carolina","North Dakota","Ohio","Oklahoma","Oregon",
+  "Pennsylvania","Rhode Island","South Carolina","South Dakota",
+  "Tennessee","Texas","Utah","Vermont","Virginia","Washington",
+  "West Virginia","Wisconsin","Wyoming",
+  "District of Columbia",
+  "Puerto Rico","Guam","American Samoa",
+  "Northern Mariana Islands","U.S. Virgin Islands"
+)
+
+df_pop_23 <- df_pop_23[!df_pop_23$Area_Name %in% us_states_territories, ]
+df_pop_23 <- df_pop_23[, c(1, ncol(df_pop_23))]
+colnames(df_pop_23) <- c("GEOID", "POPULATION")
+df_pop_23$GEOID <- as.numeric(df_pop_23$GEOID)
+df_pop_23$GEOID <- stringr::str_pad(df_pop_23$GEOID, width = 5, side = "left", pad = "0")
+df_pop_23$POPULATION100K <- df_pop_23$POPULATION / 100000
+
+#------Median Income------
+df_income_23 <- subset(df_income, Attribute=="Median_Household_Income_2022")
+df_income_23 <- df_income_23[!df_income_23$Area_Name %in% us_states_territories, ]
+df_income_23 <- df_income_23[, c(1, ncol(df_income_23))]
+colnames(df_income_23) <- c("GEOID", "INCOME")
+df_income_23$GEOID <- as.numeric(df_income_23$GEOID)
+df_income_23$GEOID <- stringr::str_pad(df_income_23$GEOID, width = 5, side = "left", pad = "0")
+df_income_23$INCOME <- as.numeric(df_income_23$INCOME)
+df_income_23$INCOME10K <- df_income_23$INCOME / 10000
+
+#------Race/Ethnicity------
+#Calculate the percent of the white population for each county. Total population is in B02001_001E. Total white population is in B02001_002E
+df_race$B02001_001E <- as.numeric(df_race$B02001_001E)
+df_race$B02001_002E <- as.numeric(df_race$B02001_002E)
+df_race$WHITE <- df_race$B02001_002E / df_race$B02001_001E * 100
+df_race_W <- df_race[, (ncol(df_race) - 1):ncol(df_race)]
+
+#------Education-----
+df_race$B02001_001E <- as.numeric(df_race$B02001_001E)
+df_race$B02001_002E <- as.numeric(df_race$B02001_002E)
+
+#Sum all populations
+#18-24: S1501_C01_001E
+#25+: S1501_C01_006E
+#18-24 BA or higher: S1501_C01_005E
+#25+ BA or higher: S1501_C01_012E
+
+df_edu$S1501_C01_001E <- as.numeric(df_edu$S1501_C01_001E)
+df_edu$S1501_C01_006E <- as.numeric(df_edu$S1501_C01_006E)
+df_edu$S1501_C01_005E <- as.numeric(df_edu$S1501_C01_005E)
+df_edu$S1501_C01_012E <- as.numeric(df_edu$S1501_C01_012E)
+
+df_edu$allpop <- df_edu$S1501_C01_001E + df_edu$S1501_C01_006E
+df_edu$BA <- df_edu$S1501_C01_005E + df_edu$S1501_C01_012E
+df_edu$deg <- df_edu$BA / df_edu$allpop * 100
+
+df_BA <- df_edu[, c(1, ncol(df_edu))]
+colnames(df_BA) <- c("GEOID", "BA")
+
+#------Nearest Metropolitan Area (M1)------
+
+df_dist_CnM1_min <- df_dist_CnM1 %>%
+  group_by(GEOID.y) %>%
+  summarise(M1_distance_miles = min(distance_miles, na.rm = TRUE), .groups = "drop") 
+
+#----ADD CONTROLS TO PANEL DATA----
+
+df_panel <- df_dem_voteshare_dist %>%
+  left_join(df_race_W, by = "GEOID")
+
+df_panel <- df_panel %>%
+  left_join(df_income_23, by = "GEOID")
+
+df_panel <- df_panel %>%
+  left_join(df_pop_23, by = "GEOID")
+
+df_panel <- df_panel %>%
+  left_join(df_BA, by = "GEOID")
+
+df_panel <- df_panel %>%
+  left_join(df_dist_CnM1_min, by = c("GEOID" = "GEOID.y"))
+
+df_panel_sub <- data.frame(
+  GEOID = df_panel$GEOID,
+  year = df_panel$year,
+  voteshare = df_panel$voteshare,
+  CnP_distance_miles = df_panel$distance_miles,
+  CnP_distance_log = df_panel$distanceCnP_log,
+  M1_distance_miles = df_panel$M1_distance_miles,
+  WHITE = df_panel$WHITE,
+  INCOME10K = df_panel$INCOME10K,
+  POPULATION100K = df_panel$POPULATION100K,
+  BA = df_panel$BA
+)
+
+df_panel_sub <- na.omit(df_panel_sub)
+
+df_panel_sub$M1_distance_log <- log(df_panel_sub$M1_distance_miles)
+```
+
+**Chunk 5:**
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#----REGRESSION MODELS----
+
+#Regression: Logged Distance (Miles)
+
+df_panel_sub_50 <- subset(df_panel_sub, CnP_distance_miles <=50)
+
+#Export as csv for replication file to run these first regressions. 
+write_csv(df_panel_sub_50, "C:/Users/julia/OneDrive - George Mason University - O365 Production/Stephen G Gailliot's files - NPS/df_panel_sub_50.csv")
+
+model_50_log <- lm(
+  voteshare ~ CnP_distance_log
+  + WHITE + INCOME10K + POPULATION100K + BA + M1_distance_log,
+  data = df_panel_sub_50
+)
+
+#------Print Model Summary------
+model_50_log_summary <- modelsummary(
+  list("Model" = model_50_log),
+
+  stars = TRUE,
+  statistic = "({std.error})",
+  gof_omit = "IC|Log|Adj",
+  title = "Regression Results",
+  output = "gt"
+  ) %>%
+  tab_options(
+    data_row.padding = px(1),
+    heading.padding = px(2),
+    table.font.size = px(11)
+)
+
+model_50_log_summary
+
+#------Regression: Logged Distance (Miles) with Factor(year)
+
+model_50_fy_log <- lm(
+  voteshare ~ CnP_distance_log + factor(year)
+  + WHITE + INCOME10K + POPULATION100K + BA + M1_distance_log,
+  data = df_panel_sub_50
+)
+
+#------Print Model Summary------
+model_50_fy_log_summary <- modelsummary(
+  list("Model" = model_50_fy_log),
+
+  stars = TRUE,
+  statistic = "({std.error})",
+  gof_omit = "IC|Log|Adj",
+  title = "Regression Results",
+  output = "gt"
+  ) %>%
+  tab_options(
+    data_row.padding = px(1),
+    heading.padding = px(2),
+    table.font.size = px(11)
+)
+
+model_50_fy_log_summary
+```
+
+**Chunk 6:**
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#----COMPARISON: DEMOCRAT VOTE SHARE, PARK PROXIMITY TO STATE----
+
+#Calculate total Democrat voteshare by state and year
+
+df_state_votes <- df_dem %>%
+  group_by(state, year) %>%
+  summarise(state_total = sum(totalvotes, na.rm=TRUE),
+            .groups = "drop")
+
+df_state_votes_dem <- df_dem %>%
+  group_by(state, year) %>%
+  summarise(dem_total = sum(candidatevotes, na.rm=TRUE),
+            .groups = "drop")
+
+df_state_votes_dem$votes <- df_state_votes$state_total
+
+df_state_votes_dem$dem_vote_share <- (df_state_votes_dem$dem_total / df_state_votes_dem$votes) * 100
+
+df_compare_vote_share <- df_state_votes_dem %>%
+  left_join(df_dem, by = c("state","year"))
+
+df_compare_vote_share <- df_compare_vote_share %>%
+   semi_join(df_panel_sub_50, by = c("GEOID", "year"))
+
+df_compare_vote_share$vs_compare <- df_compare_vote_share$dem_vote_share - df_compare_vote_share$vote_share
+
+df_compare_vote_share_clean <- df_compare_vote_share %>%
+  group_by(state, year) %>%
+  summarise(
+    vs_compare = mean(vs_compare, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+#Again, exporting data needed to create plots as CSV to run replication file.
+write_csv(df_compare_vote_share_clean, "C:/Users/julia/OneDrive - George Mason University - O365 Production/Stephen G Gailliot's files - NPS/df_compare_vote_share_clean.csv")
+
+plot_compare <- ggplot(df_compare_vote_share_clean,
+                       aes(x = year, y = vs_compare, group = state)) +
+  geom_line(color = "gray70", alpha = 0.3, linewidth = 0.4) +
+  
+  # Add overall mean trend
+  stat_summary(aes(group = 1),
+               fun = mean,
+               geom = "line",
+               color = "blue",
+               linewidth = 1.2) +
+  
+  scale_x_continuous(
+    breaks = seq(min(df_compare_vote_share_clean$year),
+                 max(df_compare_vote_share_clean$year),
+                 by = 4)
+  ) +
+  
+  coord_cartesian(ylim = c(-50, 50)) +
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "State–County Vote Share Difference Over Time",
+    subtitle = "Gray lines = states | Blue line = average",
+    x = "Year",
+    y = "Vote Share Difference (%)"
+  )
+
+plot_compare2<-ggplot(df_compare_vote_share_clean,
+       aes(x = year, y = vs_compare)) +
+  geom_line(linewidth = 0.6, color = "steelblue") +
+  facet_wrap(~ state) +
+  theme_minimal() +
+  labs(
+    title = "Vote Share Difference by State Over Time",
+    x = "Year",
+    y = "Vote Share Difference (%)"
+  )
+
+plot_compare3<-ggplot(df_compare_vote_share_clean,
+       aes(x = year, y = reorder(state, vs_compare), fill = vs_compare)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "red",
+                       mid = "white",
+                       high = "blue",
+                       midpoint = 0) +
+  theme_minimal() +
+  labs(
+    title = "State–County Vote Share Difference Over Time",
+    x = "Year",
+    y = "State",
+    fill = "Vote Share\nDifference"
+  )
+```
+
+**Chunk 7:**
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#----PROXIMITY ANALYSIS----
+
+#Calculate total proximity for bases within 50 miles.
+
+df_panel_sub_50 <- df_panel_sub %>%
+  filter(CnP_distance_miles <= 50, year == 2024)
+
+df_panel_sub_50 <- df_panel_sub_50 %>%
+  mutate(proximity = 50 - CnP_distance_miles)
+
+df_panel_sub_50_prox <- df_panel_sub_50 %>%
+  group_by(GEOID) %>%
+  summarise(total_proximity = sum(proximity, na.rm=TRUE),
+            .groups = "drop")
+
+df_panel_sub_50$proximity <- df_panel_sub_50$proximity[match(df_panel_sub_50$GEOID, df_panel_sub_50$GEOID)]
+
+#Once df_panel_sub_50 is overwritten, export under a new name to run replication files: 
+write_csv(df_panel_sub_50, "C:/Users/julia/OneDrive - George Mason University - O365 Production/Stephen G Gailliot's files - NPS/df_panel_sub_50_prox.csv")
+
+#Proximity regression
+
+model_prox <- lm(
+  voteshare ~ log(proximity)
+  + WHITE + INCOME10K + POPULATION100K + BA + M1_distance_log,
+  data = df_panel_sub_50
+)
+
+#------Print Model Summary------
+model_prox_summary <- modelsummary(
+  list("Model" = model_prox),
+  stars = TRUE,
+  statistic = "({std.error})",
+  gof_omit = "IC|Log|Adj",
+  title = "Regression Results",
+  output = "gt"
+  ) %>%
+  tab_options(
+    data_row.padding = px(1),
+    heading.padding = px(2),
+    table.font.size = px(11)
+)
+
+model_prox_summary
+```
+
+**Chunk 8:**
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+#----STATE MAP for 2024 Election only
+# Filter counties to Wyoming 
+wy_counties <- df_counties24 %>%
+  filter(STATEFP == "56")
+
+# Filter NPS data to National Parks only
+#unique(df_NPS$UNIT_NAME) #to get park names
+yellowstone <- df_NPS %>%
+  filter(UNIT_NAME == "Yellowstone National Park")
+grandteton <- df_NPS %>%
+  filter(UNIT_NAME == "Grand Teton National Park")
+
+#You could also do it this way, however, Yellowstone is classified as an Idaho park so this won't pull it into Wyoming.
+#seems like we'll have a similar problem with Gateway Arch NP. 
+#wy_parks <- df_NPS %>%
+  #filter(STATE == "WY",
+         #UNIT_TYPE == "National Park")
+
+# Make sure both layers use the same coordinate reference system
+yellowstone <- st_transform(yellowstone, st_crs(wy_counties))
+grandteton <- st_transform(grandteton, st_crs(wy_counties))
+
+#Filter voting data to Wyoming, 2024, Democrat
+wy_dem_2024 <- df_votes %>%
+  filter(state_po == "WY",
+         year == 2024,
+         party == "DEMOCRAT")
+
+# Merge with county shapefile
+wy_counties <- wy_counties %>%
+  left_join(wy_dem_2024, by = "GEOID")
+
+# Make Map
+ggplot() +
+  geom_sf(data = wy_counties, aes(fill = vote_share), color = "black", linewidth = 0.5) +
+  geom_sf(data = yellowstone, fill = "forestgreen", color = "darkgreen",
+          alpha = 0.5, linewidth = 0.8) +
+  geom_sf(data = grandteton, fill = "forestgreen", color = "darkgreen",
+          alpha = 0.5, linewidth = 0.8) +
+  scale_fill_gradient(
+    low = "white", high = "royalblue4",
+    name = "Dem. Vote Share (%)",
+    limits = c(0, 100)
+  ) +
+  labs(
+    title = "2024 Democrat Vote Share by County - Wyoming",
+    subtitle = "With Yellowstone National Park and Grand Teton National Park",
+    caption = "Sources: MIT Election Lab, U.S. Census Bureau, National Park Service"
+  ) +
+  theme_void() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 10),
+    plot.caption = element_text(hjust = 0.5, size = 8),
+    legend.position = "bottom"
+  )
+
+```
+
+**Chunk 9:**
+
+```{r}
+#----STATE MAP for all Election Years
+
+# Filter counties to Wyoming 
+wy_counties <- df_counties24 %>%
+  filter(STATEFP == "56")
+
+# Filter NPS data to National Parks only
+yellowstone <- df_NPS %>%
+  filter(UNIT_NAME == "Yellowstone National Park")
+grandteton <- df_NPS %>%
+  filter(UNIT_NAME == "Grand Teton National Park")
+
+# Match CRS
+yellowstone <- st_transform(yellowstone, st_crs(wy_counties))
+grandteton  <- st_transform(grandteton,  st_crs(wy_counties))
+
+# Filter vote share data to Wyoming across all election years
+wy_voteshare_allyears <- df_dem_voteshare %>%
+  filter(GEOID %in% wy_counties$GEOID,
+         year %in% c(2000, 2004, 2008, 2012, 2016, 2020, 2024))
+
+# Join with county shapefile (one row per county per year)
+wy_counties_allyears <- wy_counties %>%
+  left_join(wy_voteshare_allyears, by = "GEOID")
+
+# Make faceted map
+
+ggplot() +
+  geom_sf(data = wy_counties_allyears, aes(fill = voteshare), color = "black", linewidth = 0.3) +
+  geom_sf(data = yellowstone, fill = "forestgreen", color = "darkgreen",
+          alpha = 0.5, linewidth = 0.6) +
+  geom_sf(data = grandteton, fill = "forestgreen", color = "darkgreen",
+          alpha = 0.5, linewidth = 0.6) +
+  scale_fill_gradient(
+    low = "white", high = "royalblue4",
+    name = "Dem. Vote Share (%)",
+    limits = c(0, 100)
+  ) +
+  facet_wrap(~year, ncol = 4) +
+  labs(
+    title = "Democrat Vote Share by County - Wyoming (2000–2024)",
+    subtitle = "Green shading indicates Yellowstone and Grand Teton National Parks",
+    caption = "Sources: MIT Election Lab, U.S. Census Bureau, National Park Service"
+  ) +
+  theme_void() +
+  theme(
+    plot.title    = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 10),
+    plot.caption  = element_text(hjust = 0.5, size = 8),
+    legend.position = "bottom",
+    strip.text = element_text(face = "bold", size = 10)
+  )
+
+```

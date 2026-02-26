@@ -1,0 +1,278 @@
+---
+title: "Replication File for: How Proximity to National Parks Shapes Partisanship: Evidence from U.S. Counties, 2000-2024"
+author: "Julianna Thomson and Stephen Gailliot"
+date: "2026-02-26"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: sentence
+---
+
+First, load packages, and adjust path files to your machine.
+You'll need to read in these files to run the analyses:
+
+-   df_panel_sub_50.csv
+
+-   df_compare_vote_share_clean.csv
+
+-   df_panel_sub_50_prox.csv
+
+-   df_dem_voteshare.csv
+
+-   nps_boundary.shp
+
+-   tl_2024_us_county.shp
+
+```{r, message=FALSE, warning=FALSE, results='hide'}
+knitr::opts_chunk$set(echo = TRUE)
+
+rm(list = ls())
+cat("\f")
+set.seed(42)
+
+# Load Packages and set your working directory
+
+Packages<-c("tidyr", "tidyverse", "dplyr","knitr", "readr", "sf", "units", "spdep", "ggplot2", "modelsummary", "stargazer", "gt", "magrittr")
+lapply(Packages, library, character.only = TRUE)
+
+df_panel_sub_50 <- read_csv("~/Library/CloudStorage/OneDrive-GeorgeMasonUniversity-O365Production/Stephen G Gailliot's files - NPS/df_panel_sub_50.csv")
+
+df_compare_vote_share_clean <- read_csv("~/Library/CloudStorage/OneDrive-GeorgeMasonUniversity-O365Production/Stephen G Gailliot's files - NPS/df_compare_vote_share_clean.csv")
+
+df_panel_sub_50_prox <- read_csv("~/Library/CloudStorage/OneDrive-GeorgeMasonUniversity-O365Production/Stephen G Gailliot's files - NPS/df_panel_sub_50_prox.csv")
+
+df_dem_voteshare <- read_csv("~/Library/CloudStorage/OneDrive-GeorgeMasonUniversity-O365Production/Stephen G Gailliot's files - NPS/df_dem_voteshare.csv")
+
+#Read in geospatial data from the National Park Service (NPS).
+#https://irma.nps.gov/DataStore/Reference/Profile/2224545?lnv=True
+df_NPS <- st_read("~/Library/CloudStorage/OneDrive-GeorgeMasonUniversity-O365Production/Stephen G Gailliot's files - NPS/nps_boundary.shp")
+
+#Read in geospatial county data from the U.S. Census.
+#https://www.census.gov/cgi-bin/geo/shapefiles/index.php
+#Note: U.S. Census does not have a county file for 2004.
+df_counties24 <- st_read("~/Library/CloudStorage/OneDrive-GeorgeMasonUniversity-O365Production/Stephen G Gailliot's files - NPS/tl_2024_us_county.shp")
+```
+
+This code chunk runs the first set of regression analyses.
+
+-   Regression 1: Logged Distance (Miles)
+
+-   Regression 2: Logged Distance (Miles) with Factor(year)
+
+*df_panel_sub_50* contains the panel data for the regressions:
+
+-   DV is voteshare, which is the Democrat vote share by county.
+
+-   IV1 is CnPdistance_log.
+    This is the logged distance between the county and national park centroids.
+
+-   IV2 is proximity.
+    This is the logged sum of distances between the county and each national park within 50 miles by centroid.
+
+-   Controls: WHITE for ethnicity, INCOME10K, POPULATION100K, BA for education (Bachelors or higher) and M1_distance_miles/M1_distance_log for distance to the nearest metropolitan area.
+
+*model_50_summary* contains the results of the regression analysis based on df_panel_sub_50.
+It accounts for counties that are up to 50 miles from a national park.
+
+```{r}
+#----Regression 1: Logged Distance (Miles)----
+
+model_50_log <- lm(
+  voteshare ~ CnP_distance_log
+  + WHITE + INCOME10K + POPULATION100K + BA + M1_distance_log,
+  data = df_panel_sub_50
+)
+
+#------Print Model Summary------
+model_50_log_summary <- modelsummary(
+  list("Model" = model_50_log),
+
+  stars = TRUE,
+  statistic = "({std.error})",
+  gof_omit = "IC|Log|Adj",
+  title = "Regression Results",
+  output = "gt"
+  ) %>%
+  tab_options(
+    data_row.padding = px(1),
+    heading.padding = px(2),
+    table.font.size = px(11)
+)
+
+model_50_log_summary
+
+#----Regression 2: Logged Distance (Miles) with Factor(year)----
+
+model_50_fy_log <- lm(
+  voteshare ~ CnP_distance_log + factor(year)
+  + WHITE + INCOME10K + POPULATION100K + BA + M1_distance_log,
+  data = df_panel_sub_50
+)
+
+#------Print Model Summary------
+model_50_fy_log_summary <- modelsummary(
+  list("Model" = model_50_fy_log),
+
+  stars = TRUE,
+  statistic = "({std.error})",
+  gof_omit = "IC|Log|Adj",
+  title = "Regression Results",
+  output = "gt"
+  ) %>%
+  tab_options(
+    data_row.padding = px(1),
+    heading.padding = px(2),
+    table.font.size = px(11)
+)
+
+model_50_fy_log_summary
+```
+
+This code chunk runs the second analysis.
+This is a comparison of Democrat vote share and park proximity to state vote share.
+This code chunk generates three plots.
+
+```{r}
+#----Plot 1: State-County Vote Share Difference Over Time----
+plot_compare <- ggplot(df_compare_vote_share_clean,
+                       aes(x = year, y = vs_compare, group = state)) +
+  geom_line(color = "gray70", alpha = 0.3, linewidth = 0.4) +
+  
+  # Add overall mean trend
+  stat_summary(aes(group = 1),
+               fun = mean,
+               geom = "line",
+               color = "blue",
+               linewidth = 1.2) +
+  
+  scale_x_continuous(
+    breaks = seq(min(df_compare_vote_share_clean$year),
+                 max(df_compare_vote_share_clean$year),
+                 by = 4)
+  ) +
+  
+  coord_cartesian(ylim = c(-50, 50)) +
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "State–County Vote Share Difference Over Time",
+    subtitle = "Gray lines = states | Blue line = average",
+    x = "Year",
+    y = "Vote Share Difference (%)"
+  )
+
+#----Plot 2: Vote Share Difference by State Over Time----
+plot_compare2<-ggplot(df_compare_vote_share_clean,
+       aes(x = year, y = vs_compare)) +
+  geom_line(linewidth = 0.6, color = "steelblue") +
+  facet_wrap(~ state) +
+  theme_minimal() +
+  labs(
+    title = "Vote Share Difference by State Over Time",
+    x = "Year",
+    y = "Vote Share Difference (%)"
+  )
+
+#----Plot 3: State-County Vote Share Difference Over Time----
+plot_compare3<-ggplot(df_compare_vote_share_clean,
+       aes(x = year, y = reorder(state, vs_compare), fill = vs_compare)) +
+  geom_tile() +
+  scale_fill_gradient2(low = "red",
+                       mid = "white",
+                       high = "blue",
+                       midpoint = 0) +
+  theme_minimal() +
+  labs(
+    title = "State–County Vote Share Difference Over Time",
+    x = "Year",
+    y = "State",
+    fill = "Vote Share\nDifference"
+  )
+```
+
+This last chunk of code runs the final proximity regression.
+
+```{r}
+model_prox <- lm(
+  voteshare ~ log(proximity)
+  + WHITE + INCOME10K + POPULATION100K + BA + M1_distance_log,
+  data = df_panel_sub_50_prox
+)
+
+
+#------Print Model Summary------
+model_prox_summary <- modelsummary(
+  list("Model" = model_prox),
+  stars = TRUE,
+  statistic = "({std.error})",
+  gof_omit = "IC|Log|Adj",
+  title = "Regression Results",
+  output = "gt"
+  ) %>%
+  tab_options(
+    data_row.padding = px(1),
+    heading.padding = px(2),
+    table.font.size = px(11)
+)
+
+model_prox_summary 
+
+```
+
+Lastly, to generate the maps for each election year, use the code below.
+Once you read in the necessary data, you can adjust this code to make a map of any state/county/park you're interested in.
+
+Use this link to look up the state FIPS code: <https://www.bls.gov/respondents/mwr/electronic-data-interchange/appendix-d-usps-state-abbreviations-and-fips-codes.htm>
+
+```{r}
+# Next, filter counties to the state you are interested in by adjusting the FIPS code.   
+wy_counties <- df_counties24 %>%
+  filter(STATEFP == "56")
+
+# Filter NPS data to National Parks in Wyoming only
+yellowstone <- df_NPS %>%
+  filter(UNIT_NAME == "Yellowstone National Park")
+grandteton <- df_NPS %>%
+  filter(UNIT_NAME == "Grand Teton National Park")
+
+#Match CRS
+yellowstone <- st_transform(yellowstone, st_crs(wy_counties))
+grandteton  <- st_transform(grandteton,  st_crs(wy_counties))
+
+#Filter vote share data to Wyoming across all presidential election years
+wy_voteshare_allyears <- df_dem_voteshare %>%
+  filter(GEOID %in% wy_counties$GEOID,
+         year %in% c(2000, 2004, 2008, 2012, 2016, 2020, 2024))
+
+# Join with county shapefile (one row per county per year)
+wy_voteshare_allyears$GEOID <- as.character(wy_voteshare_allyears$GEOID)
+wy_counties$GEOID <- as.character(wy_counties$GEOID)
+wy_counties_allyears <- wy_counties %>%
+  left_join(wy_voteshare_allyears, by = "GEOID")
+
+#Plot
+ggplot() +
+  geom_sf(data = wy_counties_allyears, aes(fill = voteshare), color = "black", linewidth = 0.3) +
+  geom_sf(data = yellowstone, fill = "forestgreen", color = "darkgreen",
+          alpha = 0.5, linewidth = 0.6) +
+  geom_sf(data = grandteton, fill = "forestgreen", color = "darkgreen",
+          alpha = 0.5, linewidth = 0.6) +
+  scale_fill_gradient(
+    low = "white", high = "royalblue4",
+    name = "Dem. Vote Share (%)",
+    limits = c(0, 100)
+  ) +
+  facet_wrap(~year, ncol = 4) +
+  labs(
+    title = "Democrat Vote Share by County - Wyoming (2000–2024)",
+    subtitle = "Green shading indicates Yellowstone and Grand Teton National Parks",
+  ) +
+  theme_void() +
+  theme(
+    plot.title    = element_text(hjust = 0.5, face = "bold", size = 14),
+    plot.subtitle = element_text(hjust = 0.5, size = 10),
+    plot.caption  = element_text(hjust = 0.5, size = 8),
+    legend.position = "bottom",
+    strip.text = element_text(face = "bold", size = 10)
+  )
+
+```
