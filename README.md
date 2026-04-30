@@ -1,6 +1,6 @@
 # National-Parks-Project
 
-04/30/2026 - In the process of uploading scripts to replication analysis. 
+04/30/2026 - In the process of uploading scripts for replication. 
 
 The data from this project was downloaded from the following open-access sources: 
 - County-level voting data from MIT Election Data + Science Lab https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/VOQCHQ
