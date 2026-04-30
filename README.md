@@ -1,9 +1,6 @@
 # National-Parks-Project
-Code and data needed for replication of analysis from National Parks paper. 
 
-MasterNPS.Rmd runs all code to download, prep, and clean data, as well as the analysis.
-
-For quicker replication, use Replication.Rmd and the csv files which contain the clean, prepped data in this folder to run just the analysis. 
+04/30/2026 - In the process of uploading scripts to replication analysis. 
 
 The data from this project was downloaded from the following open-access sources: 
 - County-level voting data from MIT Election Data + Science Lab https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/VOQCHQ
