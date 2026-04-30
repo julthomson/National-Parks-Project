@@ -2,7 +2,7 @@
 
 04/30/2026 - In the process of uploading scripts for replication. 
 
-The data from this project was downloaded from the following open-access sources: 
+Data from this project were downloaded from the following open-access sources: 
 - County-level voting data from MIT Election Data + Science Lab https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/VOQCHQ
 - Geospatial data from the National Park Service (NPS). https://irma.nps.gov/DataStore/Reference/Profile/2224545?lnv=True
 - Geospatial county data from the U.S. Census. https://www.census.gov/cgi-bin/geo/shapefiles/index.php 
